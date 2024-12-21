@@ -80,17 +80,48 @@ jobs:
             ghc: 9.6.2
     steps:
       - uses: actions/checkout@v4
-      - uses: hspec/setup-haskell@v1
+
+      - name: Set up GHC ${{ matrix.ghc }}
+        uses: haskell-actions/setup@v2
+        id: setup
         with:
-          ghc-version: ${{ matrix.ghc }}
+          ghc: ${{ matrix.ghc }}
 
-      - run: ghcup install cabal latest --set
-        if: matrix.os == 'macos-12'
+      - name: Configure the build
+        run: |
+          cabal configure --enable-tests --enable-benchmarks --disable-documentation
+          cabal build all --dry-run
 
-      - run: cabal update
+      - name: Restore cached dependencies
+        uses: actions/cache/restore@v4
+        id: cache
+        env:
+          key: ${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc }}-cabal-${{ steps.setup.outputs.cabal-version }}
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ env.key }}-plan-${{ hashFiles('**/plan.json') }}
+          restore-keys: ${{ env.key }}-
+
+      - name: Install dependencies
+        # If we had an exact cache hit, the dependencies will be up to date.
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: cabal build all --only-dependencies
+
+      # Cache dependencies already here, so that we do not have to rebuild them should the subsequent steps fail.
+      - name: Save cached dependencies
+        uses: actions/cache/save@v4
+        # If we had an exact cache hit, trying to save the cache would error because of key clash.
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
       - run: cabal build
-      - run: cabal exec $(cabal list-bin spec)
+
+      - run: cabal exec "$(cabal list-bin spec)"
+
       - run: cabal install
+
       - run: cabal repl --with-compiler=doctest
 
   success:
@@ -102,6 +133,6 @@ jobs:
       - run: false
         if: needs.build.result != 'success'
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - run: curl -sSL https://raw.githubusercontent.com/sol/hpack/main/get-hpack.sh | bash
       - run: hpack && git diff --color --exit-code
